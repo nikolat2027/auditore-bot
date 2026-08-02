@@ -8,6 +8,7 @@ from typing import Dict, Set, List, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
+from flask import Flask
 
 # ===== ЗАГРУЗКА КОНФИГУРАЦИИ ИЗ .env =====
 load_dotenv()
@@ -27,13 +28,20 @@ CACHE_TTL = 60
 NAME_CACHE_TTL = 300
 SAVE_DELAY = 5.0
 PENDING_TIMEOUT = 300
-INACTIVE_DAYS = 14                     # срок неактивности беседы в днях
+INACTIVE_DAYS = 14
 INACTIVE_SECONDS = INACTIVE_DAYS * 24 * 3600
-CLEANUP_INTERVAL = 3600 * 24           # раз в сутки проверяем неактивные беседы
+CLEANUP_INTERVAL = 3600 * 24
 
 # ===== КЕШ ДЛЯ API =====
 members_cache = {}
 name_cache = {}
+
+# ===== Flask приложение (для Render) =====
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Бот ВКонтакте работает!"
 
 # ===== РАБОТА С ДАННЫМИ =====
 class BotData:
@@ -51,7 +59,7 @@ class BotData:
         self.ideas: List[Dict] = []
         self.pending_actions: Dict[int, Dict] = {}
         self.ideas_enabled: bool = True
-        self.last_activity: Dict[int, int] = {}   # peer_id -> timestamp последней активности
+        self.last_activity: Dict[int, int] = {}
 
         self._dirty = False
         self._save_timer = None
@@ -80,7 +88,6 @@ class BotData:
                 for k, v in pending.items():
                     self.pending_actions[int(k)] = v
                 self.ideas_enabled = data.get("ideas_enabled", True)
-                # Загрузка last_activity
                 last_act = data.get("last_activity", {})
                 self.last_activity = {int(k): v for k, v in last_act.items()}
         except FileNotFoundError:
@@ -131,10 +138,9 @@ class BotData:
         self.save()
 
     def update_activity(self, peer_id: int):
-        """Обновить время последней активности в беседе."""
         if peer_id in self.active_chats:
             self.last_activity[peer_id] = int(time.time())
-            self.save()  # сохраняем, чтобы не потерять при внезапном отключении
+            self.save()
 
     def add_idea(self, author_id: int, text: str):
         idea = {
@@ -330,7 +336,7 @@ def format_timestamp(ts: int) -> str:
     dt = datetime.fromtimestamp(ts)
     return dt.strftime("%d.%m.%Y %H:%M")
 
-# ===== КЛАВИАТУРА ДЛЯ ЛИЧНЫХ СООБЩЕНИЙ (только кнопка поддержки) =====
+# ===== КЛАВИАТУРА ДЛЯ ЛИЧНЫХ СООБЩЕНИЙ =====
 def get_private_keyboard() -> dict:
     return {
         "one_time": False,
@@ -391,7 +397,7 @@ def handle_start(peer_id: int, from_id: int, args: List[str], data: BotData):
         send_message(peer_id, "ℹ️ Бот уже запущен в данной беседе.")
     else:
         data.active_chats.add(peer_id)
-        data.update_activity(peer_id)  # обновляем активность
+        data.update_activity(peer_id)
         send_message(peer_id, "✅ Вы успешно запустили бота!")
 
 def handle_setnick(peer_id: int, from_id: int, args: List[str], data: BotData):
@@ -406,15 +412,15 @@ def handle_setnick(peer_id: int, from_id: int, args: List[str], data: BotData):
         send_message(peer_id, "❗ Не удалось распознать пользователя. Используйте @упоминание.")
         return
     if target_id in data.nicks:
-        send_message(peer_id, f"⚠️ У пользователя {get_user_display(target_id, data, peer_id)} уже есть ник: {data.nicks[target_id]}. Используйте /rnick для удаления.")
+        send_message(peer_id, f"⚠️ У пользователя {get_user_display(target_id, data, peer_id)} уже есть глобальный ник: {data.nicks[target_id]}. Используйте /rnick для удаления.")
         return
     nickname = " ".join(args[1:])
     if not nickname:
         send_message(peer_id, "❗ Укажите ник.")
         return
     data.nicks[target_id] = nickname
-    data.add_log("установил ник", target_id, from_id, peer_id, nickname)
-    send_message(peer_id, f"✅ Ник для {get_user_display(target_id, data, peer_id)} установлен: {nickname}")
+    data.add_log("установил глобальный ник", target_id, from_id, peer_id, nickname)
+    send_message(peer_id, f"✅ Глобальный ник для {get_user_display(target_id, data, peer_id)} установлен: {nickname}")
     data.save()
 
 def handle_rnick(peer_id: int, from_id: int, args: List[str], data: BotData):
@@ -433,8 +439,8 @@ def handle_rnick(peer_id: int, from_id: int, args: List[str], data: BotData):
     if target_id in data.nicks:
         old_nick = data.nicks[target_id]
         del data.nicks[target_id]
-        data.add_log("удалил ник", target_id, from_id, peer_id, old_nick)
-        send_message(peer_id, f"✅ Ник у {get_user_display(target_id, data, peer_id)} удалён.")
+        data.add_log("удалил глобальный ник", target_id, from_id, peer_id, old_nick)
+        send_message(peer_id, f"✅ Глобальный ник у {get_user_display(target_id, data, peer_id)} удалён.")
         removed = True
 
     if peer_id in data.profiles and target_id in data.profiles[peer_id]:
@@ -834,33 +840,6 @@ def handle_clear(peer_id: int, from_id: int, args: List[str], data: BotData):
     data.add_log("очистил сообщения", from_id, from_id, peer_id, f"удалено {len(msg_ids)} сообщений")
     send_message(peer_id, f"✅ Удалено {len(msg_ids)} сообщений.")
 
-def handle_help(peer_id: int, from_id: int, args: List[str], data: BotData):
-    help_text = (
-        "📖 Список команд:\n"
-        "/start — активировать бота в беседе\n"
-        "/setnick @user <ник> — установить ник.\n"
-        "/rnick @user — удалить ник.\n"
-        "/kick @user [причина: текст] — исключить пользователя.\n"
-        "/allkick @user — исключить из всех бесед.\n"
-        "/admin — список админов; /admin @user — добавить админа; /admin remove @user — снять админа\n"
-        "/warn @user — выдать предупреждение.\n"
-        "/unwarn @user — снять одно предупреждение.\n"
-        "/allunwarn @user — снять все предупреждения.\n"
-        "/warnlist — список пользователей с предупреждениями\n"
-        "/online — участники онлайн\n"
-        "/reg @user — дата добавления пользователя\n"
-        "/regall — все участники с датами добавления\n"
-        "/приветствие <текст> — установить приветствие (пустое — удалить).\n"
-        "/шаблон поле1 | поле2 | ... — установить шаблон анкеты\n"
-        "/форма значение1 | значение2 | ... — заполнить анкету\n"
-        "/nonick — участники без ника\n"
-        "/nlist — участники с никами\n"
-        "/getnick <ник> — найти пользователей по никнейму\n"
-        "/help — показать это сообщение"
-    )
-    send_message(peer_id, help_text)
-
-# ===== НОВАЯ КОМАНДА /getnick =====
 def handle_getnick(peer_id: int, from_id: int, args: List[str], data: BotData):
     if not args:
         send_message(peer_id, "❗ Укажите ник или часть ника для поиска: /getnick <ник>")
@@ -876,12 +855,10 @@ def handle_getnick(peer_id: int, from_id: int, args: List[str], data: BotData):
         user_id = member.get("member_id")
         if not user_id or user_id < 0:
             continue
-        # Проверяем глобальный ник
         nick = data.nicks.get(user_id)
         if nick and search in nick.lower():
-            found.append((user_id, nick, ""))
+            found.append((user_id, nick, "глобальный"))
             continue
-        # Проверяем ник в анкете
         if peer_id in data.profiles and user_id in data.profiles[peer_id]:
             profile = data.profiles[peer_id][user_id]
             for key, value in profile.items():
@@ -903,9 +880,35 @@ def handle_getnick(peer_id: int, from_id: int, args: List[str], data: BotData):
         text += f"\n... и ещё {len(found)-20} человек."
     send_message(peer_id, text)
 
-# ===== ФУНКЦИЯ ПРОВЕРКИ АКТИВНЫХ БЕСЕД =====
+def handle_help(peer_id: int, from_id: int, args: List[str], data: BotData):
+    help_text = (
+        "📖 Список команд:\n"
+        "/start — активировать бота в беседе\n"
+        "/setnick @user <ник> — установить глобальный ник (только админы)\n"
+        "/rnick @user — удалить глобальный ник и/или ник из анкеты (только админы)\n"
+        "/kick @user [причина: текст] — исключить пользователя (только админы)\n"
+        "/allkick @user — исключить из всех бесед (только админы)\n"
+        "/admin — список админов; /admin @user — добавить админа; /admin remove @user — снять админа\n"
+        "/warn @user — выдать предупреждение (3 = кик) (только админы)\n"
+        "/unwarn @user — снять одно предупреждение (только админы)\n"
+        "/allunwarn @user — снять все предупреждения (только админы)\n"
+        "/warnlist — список пользователей с предупреждениями\n"
+        "/online — участники онлайн\n"
+        "/reg @user — дата добавления пользователя\n"
+        "/regall — все участники с датами добавления\n"
+        "/приветствие <текст> — установить приветствие (пустое — удалить) (только админы)\n"
+        "/шаблон поле1 | поле2 | ... — установить шаблон анкеты (только админы)\n"
+        "/форма значение1 | значение2 | ... — заполнить анкету\n"
+        "/nonick — участники без глобального ника\n"
+        "/nlist — участники с никами/анкетами\n"
+        "/getnick <ник> — найти пользователей по никнейму\n"
+        "/clear [количество] — удалить последние N сообщений (по умолчанию 50) (только админы)\n"
+        "/help — показать это сообщение"
+    )
+    send_message(peer_id, help_text)
+
+# ===== ФУНКЦИИ ОЧИСТКИ НЕАКТИВНЫХ БЕСЕД =====
 def clean_inactive_chats(data: BotData):
-    """Удаляет беседы, где бот уже не состоит (по членству)."""
     for peer_id in list(data.active_chats):
         try:
             members = get_chat_members_cached(peer_id)
@@ -918,7 +921,6 @@ def clean_inactive_chats(data: BotData):
             data.clear_chat_data(peer_id)
 
 def clean_inactive_chats_by_time(data: BotData):
-    """Удаляет беседы, которые не использовались более INACTIVE_DAYS дней."""
     now = time.time()
     to_remove = []
     for peer_id, last_ts in data.last_activity.items():
@@ -928,7 +930,7 @@ def clean_inactive_chats_by_time(data: BotData):
         print(f"Беседа {peer_id} неактивна более {INACTIVE_DAYS} дней, очищаем данные.")
         data.clear_chat_data(peer_id)
 
-# ===== ОСНОВНОЙ ЦИКЛ =====
+# ===== ОСНОВНОЙ ЦИКЛ БОТА =====
 def main():
     print("Загрузка данных...")
     data = BotData()
@@ -1014,11 +1016,9 @@ def main():
                         handle_private_message(peer_id, from_id, text, data)
                         continue
 
-                    # Обновляем активность для любой беседы, если она активна
                     if peer_id in data.active_chats:
                         data.update_activity(peer_id)
 
-                    # Обработка приглашения
                     if action and action.get("type") == "chat_invite_user":
                         inviter_id = from_id
                         invited_id = action.get("member_id")
@@ -1071,7 +1071,6 @@ def main():
                     if cmd in commands:
                         commands[cmd](peer_id, from_id, args, data)
 
-            # Периодическая очистка неактивных бесед (раз в сутки)
             if time.time() - last_cleanup_time > CLEANUP_INTERVAL:
                 clean_inactive_chats_by_time(data)
                 last_cleanup_time = time.time()
@@ -1080,5 +1079,10 @@ def main():
             print(f"Ошибка в цикле: {e}")
             time.sleep(5)
 
+# ===== ЗАПУСК =====
 if __name__ == "__main__":
+    # Запускаем Flask в отдельном потоке, чтобы не блокировать основного цикла бота
+    port = int(os.getenv("PORT", 10000))
+    threading.Thread(target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False), daemon=True).start()
+    # Запускаем основную логику бота
     main()
