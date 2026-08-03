@@ -39,14 +39,13 @@ name_cache = {}
 class BotData:
     def __init__(self):
         self.admins: Set[int] = set()
-        # Удалён словарь nicks – ники только локальные
         self.warns: Dict[int, Dict[int, int]] = {}
         self.active_chats: Set[int] = set()
         self.names: Dict[int, str] = {}
         self.join_dates: Dict[int, Dict[int, int]] = {}
         self.greetings: Dict[int, str] = {}
         self.logs: List[Dict] = []
-        self.profiles: Dict[int, Dict[int, Dict[str, str]]] = {}  # peer_id -> user_id -> profile
+        self.profiles: Dict[int, Dict[int, Dict[str, str]]] = {}
         self.form_templates: Dict[int, List[str]] = {}
         self.ideas: List[Dict] = []
         self.pending_actions: Dict[int, Dict] = {}
@@ -63,7 +62,6 @@ class BotData:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 self.admins = set(data.get("admins", []))
-                # nicks игнорируем
                 self.warns = {int(k): {int(u): c for u, c in v.items()}
                               for k, v in data.get("warns", {}).items()}
                 self.active_chats = set(data.get("active_chats", []))
@@ -94,7 +92,6 @@ class BotData:
                 return
             data = {
                 "admins": list(self.admins),
-                # nicks не сохраняем
                 "warns": self.warns,
                 "active_chats": list(self.active_chats),
                 "names": self.names,
@@ -309,13 +306,11 @@ def get_user_name_cached(user_id: int, data: BotData) -> str:
     return f"id{user_id}"
 
 def get_user_display(user_id: int, data: BotData, peer_id: int = None) -> str:
-    # Только локальный ник из профиля беседы
     if peer_id is not None and peer_id in data.profiles and user_id in data.profiles[peer_id]:
         profile = data.profiles[peer_id][user_id]
         for key in profile.keys():
             if key.lower() == "ник":
                 return f"[id{user_id}|{profile[key]}]"
-    # Если нет локального ника – имя
     name = get_user_name_cached(user_id, data)
     return f"[id{user_id}|{name}]"
 
@@ -413,7 +408,6 @@ def handle_setnick(peer_id: int, from_id: int, args: List[str], data: BotData):
         send_message(peer_id, "❗ Укажите ник.")
         return
 
-    # Записываем локальный ник
     if peer_id not in data.profiles:
         data.profiles[peer_id] = {}
     if target_id not in data.profiles[peer_id]:
@@ -780,7 +774,6 @@ def handle_nlist(peer_id: int, from_id: int, args: List[str], data: BotData):
         user_id = member.get("member_id")
         if not user_id or user_id < 0:
             continue
-        # Исключаем самого автора команды
         if user_id == from_id:
             continue
         has_nick = False
@@ -880,6 +873,30 @@ def handle_clear(peer_id: int, from_id: int, args: List[str], data: BotData):
     data.add_log("очистил сообщения", from_id, from_id, peer_id, f"удалено {len(msg_ids)} сообщений")
     send_message(peer_id, f"✅ Удалено {len(msg_ids)} сообщений.")
 
+# ===== НОВАЯ КОМАНДА ДЛЯ УДАЛЕНИЯ ВСЕХ НИКОВ =====
+def handle_clearallnicks(peer_id: int, from_id: int, args: List[str], data: BotData):
+    if from_id not in data.admins:
+        send_message(peer_id, "⛔ У вас нет прав на эту команду.")
+        return
+    if peer_id not in data.profiles:
+        send_message(peer_id, "📭 В этой беседе нет анкет.")
+        return
+    count = 0
+    # Проходим по всем пользователям в этой беседе
+    for user_id in list(data.profiles[peer_id].keys()):
+        profile = data.profiles[peer_id][user_id]
+        if "Ник" in profile:
+            del profile["Ник"]
+            count += 1
+            if not profile:  # если профиль стал пустым, удаляем его
+                del data.profiles[peer_id][user_id]
+    # Если после удаления в беседе не осталось профилей, удаляем саму запись
+    if not data.profiles[peer_id]:
+        del data.profiles[peer_id]
+    data.add_log("очистил все ники", from_id, from_id, peer_id, f"удалено {count} ников")
+    send_message(peer_id, f"✅ Удалено {count} ников у всех пользователей.")
+    data.save()
+
 def handle_help(peer_id: int, from_id: int, args: List[str], data: BotData):
     help_text = (
         "📖 Список команд:\n"
@@ -903,6 +920,7 @@ def handle_help(peer_id: int, from_id: int, args: List[str], data: BotData):
         "/nlist — участники с никами\n"
         "/getnick <ник> — найти пользователей по нику\n"
         "/clear — удалить последние сообщения\n"
+        "/clearallnicks — удалить ники у всех пользователей в беседе\n"
         "/help — показать это сообщение"
     )
     send_message(peer_id, help_text)
@@ -971,6 +989,7 @@ def main():
         "/nlist": handle_nlist,
         "/getnick": handle_getnick,
         "/clear": handle_clear,
+        "/clearallnicks": handle_clearallnicks,
         "/help": handle_help,
     }
 
