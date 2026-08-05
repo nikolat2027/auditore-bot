@@ -30,10 +30,12 @@ PENDING_TIMEOUT = 300
 INACTIVE_DAYS = 14
 INACTIVE_SECONDS = INACTIVE_DAYS * 24 * 3600
 CLEANUP_INTERVAL = 3600 * 24
+DUPLICATE_CACHE_TTL = 10  # секунд, в течение которых игнорируем повторные сообщения
 
-# ===== КЕШ ДЛЯ API =====
+# ===== КЕШ ДЛЯ API И ДУБЛЕЙ =====
 members_cache = {}
 name_cache = {}
+processed_messages = {}  # {(peer_id, conversation_message_id): timestamp}
 
 # ===== РАБОТА С ДАННЫМИ =====
 class BotData:
@@ -774,6 +776,7 @@ def handle_nlist(peer_id: int, from_id: int, args: List[str], data: BotData):
         user_id = member.get("member_id")
         if not user_id or user_id < 0:
             continue
+        # Исключаем самого пользователя, чтобы не показывать его в списке
         if user_id == from_id:
             continue
         has_nick = False
@@ -873,7 +876,6 @@ def handle_clear(peer_id: int, from_id: int, args: List[str], data: BotData):
     data.add_log("очистил сообщения", from_id, from_id, peer_id, f"удалено {len(msg_ids)} сообщений")
     send_message(peer_id, f"✅ Удалено {len(msg_ids)} сообщений.")
 
-# ===== НОВАЯ КОМАНДА ДЛЯ УДАЛЕНИЯ ВСЕХ НИКОВ =====
 def handle_clearallnicks(peer_id: int, from_id: int, args: List[str], data: BotData):
     if from_id not in data.admins:
         send_message(peer_id, "⛔ У вас нет прав на эту команду.")
@@ -882,15 +884,13 @@ def handle_clearallnicks(peer_id: int, from_id: int, args: List[str], data: BotD
         send_message(peer_id, "📭 В этой беседе нет анкет.")
         return
     count = 0
-    # Проходим по всем пользователям в этой беседе
     for user_id in list(data.profiles[peer_id].keys()):
         profile = data.profiles[peer_id][user_id]
         if "Ник" in profile:
             del profile["Ник"]
             count += 1
-            if not profile:  # если профиль стал пустым, удаляем его
+            if not profile:
                 del data.profiles[peer_id][user_id]
-    # Если после удаления в беседе не осталось профилей, удаляем саму запись
     if not data.profiles[peer_id]:
         del data.profiles[peer_id]
     data.add_log("очистил все ники", from_id, from_id, peer_id, f"удалено {count} ников")
@@ -1018,6 +1018,12 @@ def main():
 
             ts = data_json["ts"]
 
+            # Очищаем старые записи из кеша дублей
+            now = time.time()
+            for key in list(processed_messages.keys()):
+                if now - processed_messages[key] > DUPLICATE_CACHE_TTL:
+                    del processed_messages[key]
+
             for update in data_json.get("updates", []):
                 event_type = update.get("type")
 
@@ -1027,6 +1033,14 @@ def main():
                     from_id = msg.get("from_id")
                     text = msg.get("text", "").strip()
                     action = msg.get("action")
+                    conv_msg_id = msg.get("conversation_message_id")
+
+                    # Защита от дублирования
+                    if conv_msg_id:
+                        cache_key = (peer_id, conv_msg_id)
+                        if cache_key in processed_messages:
+                            continue
+                        processed_messages[cache_key] = now
 
                     if from_id == -GROUP_ID:
                         continue
