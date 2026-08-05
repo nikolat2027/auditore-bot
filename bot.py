@@ -8,6 +8,7 @@ from typing import Dict, Set, List, Optional
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
+from flask import Flask
 
 # ===== ЗАГРУЗКА КОНФИГУРАЦИИ ИЗ .env =====
 load_dotenv()
@@ -776,7 +777,6 @@ def handle_nlist(peer_id: int, from_id: int, args: List[str], data: BotData):
         user_id = member.get("member_id")
         if not user_id or user_id < 0:
             continue
-        # Исключаем самого пользователя, чтобы не показывать его в списке
         if user_id == from_id:
             continue
         has_nick = False
@@ -948,7 +948,7 @@ def clean_inactive_chats_by_time(data: BotData):
         print(f"Беседа {peer_id} неактивна более {INACTIVE_DAYS} дней, очищаем данные.")
         data.clear_chat_data(peer_id)
 
-# ===== ОСНОВНОЙ ЦИКЛ =====
+# ===== ОСНОВНОЙ ЦИКЛ БОТА =====
 def main():
     print("Загрузка данных...")
     data = BotData()
@@ -1132,5 +1132,21 @@ def main():
             print(f"Ошибка в цикле: {e}")
             time.sleep(5)
 
+# ===== ЗАПУСК FLASK-СЕРВЕРА ДЛЯ HEALTH CHECKS =====
+app = Flask(__name__)
+
+@app.route('/')
+@app.route('/health')
+def health():
+    return "OK", 200
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
 if __name__ == "__main__":
+    # Запускаем веб-сервер в отдельном потоке
+    web_thread = threading.Thread(target=run_web, daemon=True)
+    web_thread.start()
+    # Запускаем основную функцию бота
     main()
